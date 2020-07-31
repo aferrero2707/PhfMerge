@@ -1070,7 +1070,7 @@ main( int argc, char **argv )
   std::string outfile = "/tmp/llfout.tif";
   for (optind = 1; optind < argc && argv[optind][0] == '-'; optind++) {
       switch (argv[optind][1]) {
-      case 'c': optind++; compression = atof(argv[optind]); break;
+      case 'c': optind++; compression = atof(argv[optind]); compression0 = compression; break;
       case 'C': optind++; contrast = atof(argv[optind]); optind++; contrast0 = atof(argv[optind]); break;
       case 't': optind++; thr = atof(argv[optind]); break;
       case 'o': optind++; outfile = argv[optind]; break;
@@ -1079,10 +1079,11 @@ main( int argc, char **argv )
           exit(EXIT_FAILURE);
       }
   }
+
   ALPHA = contrast;
   ALPHA0 = contrast0;
   BETA = 1.0f / compression;
-  BETA0 = BETA;
+  BETA0 = 1.0f / compression0;
   THRESHOLD = thr;
 
 
@@ -1216,6 +1217,10 @@ main( int argc, char **argv )
       image->Xsize, image->Ysize, image->Bands, image->BandFmt );
   vips_tiffsave( out, outfile.c_str(), "compression", VIPS_FOREIGN_TIFF_COMPRESSION_DEFLATE,
       "predictor", VIPS_FOREIGN_TIFF_PREDICTOR_NONE, NULL );
+
+  FILE* fout = fopen((outfile+".txt").c_str(), "w");
+  fprintf(fout, "compression: %0.2f %0.2f\ncontrast: %0.2f %0.2f\nthreshold: %0.2f\n", compression, compression0, contrast, contrast0, thr);
+  fclose(fout);
 
   //LaplacianPyramid p( buf, array_sz, image->Xsize, image->Ysize, image->Bands, image->BandFmt, 2 );
 
