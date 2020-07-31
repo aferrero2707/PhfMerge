@@ -1,6 +1,30 @@
-/* Compile with
+/*
+ * Implementation of the Local Laplacian Filter algorithm as described in https://people.csail.mit.edu/sparis/publi/2011/siggraph/
+ */
 
-   gcc rawsave.c `pkg-config vips --cflags --libs`
+/*
+
+    Copyright (C) 2020 Ferrero Andrea
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program. If not, see <http://www.gnu.org/licenses/>.
+
+
+ */
+
+/*
+
+    These files are distributed with PhfMerge - https://github.com/aferrero2707/PhfMerge
 
  */
 
@@ -13,9 +37,11 @@
 #undef __SSE2__
 
 
-#define THRESHOLD 0.5f
-#define ALPHA 1.5f
-#define BETA 0.5f
+static float THRESHOLD = 0.5f;
+static float ALPHA = 1.5f;
+static float ALPHA0 = 1.f;
+static float BETA = 0.5f;
+static float BETA0 = 0.5f;
 #define STRENGTH 1.0f
 #define LOGL 1
 
@@ -702,6 +728,8 @@ public:
   Image padded[max_levels];
   Image laplacian[max_levels];
   Image output[max_levels];
+  float alpha[max_levels];
+  float beta[max_levels];
   int width, height;
   int num_levels;
   int padding;
@@ -710,6 +738,24 @@ public:
 public:
   GaussianPyramid(float* input, LLRect& valid, LLRect& roi, int nl, bool add_padding=true, bool verbose=false);
   //~GaussianPyramid() {printf("Destroying gaussian pyramid\n");}
+
+  void set_alpha(float al, float a0)
+  {
+    int last_level = num_levels-1;
+    for(int l=last_level-1;l>=0;l--) {
+      float i = static_cast<float>(l) / (num_levels-1);
+      alpha[l] = al * i + a0 * (1.0f - i);
+    }
+  }
+  void set_beta(float bl, float b0)
+  {
+    int last_level = num_levels-1;
+    for(int l=last_level-1;l>=0;l--) {
+      float i = static_cast<float>(l) / (num_levels-1);
+      beta[l] = bl * i + b0 * (1.0f - i);
+      printf("beta[%d] = %f\n", l, beta[l]);
+    }
+  }
 
   void fill_laplacian();
   void remap();
@@ -918,13 +964,13 @@ float GaussianPyramid::get_laplacian_coefficient(int x, int y, int l)
       float delta = val - g;
       if( delta > thr ) {
         float diff = val - (g+thr);
-        cropped.set_pixel(x, y, g+thr+(diff*BETA));
+        cropped.set_pixel(x, y, g+thr+(diff*beta[l]));
       } else if( delta < -thr ) {
         float diff = (g-thr) - val;
-        cropped.set_pixel(x, y, g-thr-(diff*BETA));
+        cropped.set_pixel(x, y, g-thr-(diff*beta[l]));
       } else {
-        if(verbose) printf("cropped(%d, %d): %+0.5f --> %+0.5f  delta=%+0.5f  \n", x, y, cropped(x, y), g+(delta*ALPHA), delta);
-        cropped.set_pixel(x, y, g+(delta*ALPHA));
+        if(verbose) printf("cropped(%d, %d): %+0.5f --> %+0.5f  delta=%+0.5f  \n", x, y, cropped(x, y), g+(delta*alpha[l]), delta);
+        cropped.set_pixel(x, y, g+(delta*alpha[l]));
       }
     }
   }
@@ -1015,6 +1061,31 @@ void GaussianPyramid::remap()
 int
 main( int argc, char **argv )
 {
+  float compression = 2;
+  float compression0 = 2;
+  float contrast = 1.5;
+  float contrast0 = 1.0;
+  float thr = 0.5;
+  size_t optind;
+  std::string outfile = "/tmp/llfout.tif";
+  for (optind = 1; optind < argc && argv[optind][0] == '-'; optind++) {
+      switch (argv[optind][1]) {
+      case 'c': optind++; compression = atof(argv[optind]); break;
+      case 'C': optind++; contrast = atof(argv[optind]); optind++; contrast0 = atof(argv[optind]); break;
+      case 't': optind++; thr = atof(argv[optind]); break;
+      case 'o': optind++; outfile = argv[optind]; break;
+      default:
+          fprintf(stderr, "Usage: %s \n", argv[0]);
+          exit(EXIT_FAILURE);
+      }
+  }
+  ALPHA = contrast;
+  ALPHA0 = contrast0;
+  BETA = 1.0f / compression;
+  BETA0 = BETA;
+  THRESHOLD = thr;
+
+
 #ifdef TEST_IMG
   int W = 32;
   int H = 1;
@@ -1050,9 +1121,9 @@ main( int argc, char **argv )
 
 
   // Create VipsImage from given file
-  image = vips_image_new_from_file( argv[1], NULL );
+  image = vips_image_new_from_file( argv[argc-1], NULL );
   if( !image ) {
-    printf("Failed to load \"%s\"\n",argv[1]);
+    printf("Failed to load \"%s\"\n",argv[argc-1]);
     return 1;
   }
 
@@ -1103,6 +1174,8 @@ main( int argc, char **argv )
   int nl = pyramid_get_num_levels(r.width, r.height) + 0;
 
   GaussianPyramid gp(input, v, r, nl, true, verbose);
+  gp.set_alpha(ALPHA, ALPHA0);
+  gp.set_beta(BETA, BETA0);
   //getchar();
   //gp.get_laplacian_coefficient(2, 0, 2); getchar();
   //gp.fill_laplacian();
@@ -1135,12 +1208,13 @@ main( int argc, char **argv )
     }
   }
 
+  printf("Saving output to %s\n", outfile.c_str());
   //VipsImage* out = vips_image_new_from_memory( outimg.pixels,
   //    sizeof(float)*outimg.width*outimg.height,
   //    outimg.width, outimg.height, 1, image->BandFmt );
   VipsImage* out = vips_image_new_from_memory( buf, sizeof(float) * image->Xsize * image->Ysize * image->Bands,
       image->Xsize, image->Ysize, image->Bands, image->BandFmt );
-  vips_tiffsave( out, "/tmp/out.tif", "compression", VIPS_FOREIGN_TIFF_COMPRESSION_DEFLATE,
+  vips_tiffsave( out, outfile.c_str(), "compression", VIPS_FOREIGN_TIFF_COMPRESSION_DEFLATE,
       "predictor", VIPS_FOREIGN_TIFF_PREDICTOR_NONE, NULL );
 
   //LaplacianPyramid p( buf, array_sz, image->Xsize, image->Ysize, image->Bands, image->BandFmt, 2 );
